@@ -1,0 +1,14 @@
+server:
+  port: 8081
+
+spring:
+  application:
+    name: order-service
+
+pulsar:
+  service-url: pulsar://localhost:6650
+
+logging:
+  level:
+    ru.olga.gof.pattern: DEBUG
+    org.apache.pulsar: INFO

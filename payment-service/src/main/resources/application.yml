@@ -1,0 +1,14 @@
+server:
+  port: 8082
+
+spring:
+  application:
+    name: payment-service
+
+pulsar:
+  service-url: pulsar://localhost:6650
+
+logging:
+  level:
+    ru.olga.gof.pattern: DEBUG
+    org.apache.pulsar: INFO

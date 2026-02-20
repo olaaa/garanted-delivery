@@ -1,0 +1,15 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: saga-orchestrator
+
+# Pulsar configuration
+pulsar:
+  service-url: pulsar://localhost:6650
+
+logging:
+  level:
+    ru.olga.gof.pattern: DEBUG
+    org.apache.pulsar: INFO

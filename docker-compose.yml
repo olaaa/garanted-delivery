@@ -1,0 +1,92 @@
+version: '3.8'
+
+services:
+  # Apache Pulsar standalone (включает broker, bookkeeper, zookeeper)
+  pulsar:
+    image: apachepulsar/pulsar:3.3.3
+    container_name: pulsar
+    hostname: pulsar
+    ports:
+      - "6650:6650"  # Pulsar binary protocol
+      - "8080:8080"  # Pulsar HTTP/Admin API
+    command: bin/pulsar standalone
+    environment:
+      # Включаем дедупликацию для exactly-once semantics
+      - PULSAR_STANDALONE_USE_ZOOKEEPER=1
+      - PULSAR_PREFIX_brokerDeduplicationEnabled=true
+      - PULSAR_PREFIX_brokerDeduplicationMaxNumberOfProducers=10000
+    volumes:
+      - pulsar-data:/pulsar/data
+    healthcheck:
+      test: ["CMD", "bin/pulsar-admin", "brokers", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Saga Orchestrator
+  saga-orchestrator:
+    build:
+      context: ./saga-orchestrator
+      dockerfile: Dockerfile
+    container_name: saga-orchestrator
+    ports:
+      - "8080:8080"
+    environment:
+      - PULSAR_SERVICE_URL=pulsar://pulsar:6650
+    depends_on:
+      pulsar:
+        condition: service_healthy
+    restart: on-failure
+
+  # Order Service
+  order-service:
+    build:
+      context: ./order-service
+      dockerfile: Dockerfile
+    container_name: order-service
+    ports:
+      - "8081:8081"
+    environment:
+      - PULSAR_SERVICE_URL=pulsar://pulsar:6650
+    depends_on:
+      pulsar:
+        condition: service_healthy
+    restart: on-failure
+
+  # Payment Service
+  payment-service:
+    build:
+      context: ./payment-service
+      dockerfile: Dockerfile
+    container_name: payment-service
+    ports:
+      - "8082:8082"
+    environment:
+      - PULSAR_SERVICE_URL=pulsar://pulsar:6650
+    depends_on:
+      pulsar:
+        condition: service_healthy
+    restart: on-failure
+
+  # Inventory Service
+  inventory-service:
+    build:
+      context: ./inventory-service
+      dockerfile: Dockerfile
+    container_name: inventory-service
+    ports:
+      - "8083:8083"
+    environment:
+      - PULSAR_SERVICE_URL=pulsar://pulsar:6650
+    depends_on:
+      pulsar:
+        condition: service_healthy
+    restart: on-failure
+
+volumes:
+  pulsar-data:
+    driver: local
+
+networks:
+  default:
+    name: saga-network
