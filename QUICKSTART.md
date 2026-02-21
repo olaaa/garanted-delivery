@@ -5,12 +5,12 @@
 ### 1. Запустить Pulsar
 
 ```bash
-docker-compose up pulsar -d
+docker compose up pulsar -d
 ```
 
 Дождаться готовности:
 ```bash
-docker-compose logs -f pulsar | grep "messaging service is ready"
+docker compose logs -f pulsar | grep "messaging service is ready"
 ```
 
 ### 2. Собрать проект

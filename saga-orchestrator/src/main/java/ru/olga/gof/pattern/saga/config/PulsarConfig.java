@@ -40,13 +40,11 @@ public class PulsarConfig {
         return PulsarClient.builder()
                 .serviceUrl(serviceUrl)
                 // IO threads для network operations
-                .ioThreads(4)
+                .ioThreads(2)
                 // Listener threads для callbacks
-                .listenerThreads(4)
+                .listenerThreads(2)
                 // Таймаут операций
                 .operationTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
-                // Автоматический reconnect
-                .enableTransaction(true)
                 .build();
     }
 
