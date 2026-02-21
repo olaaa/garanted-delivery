@@ -44,77 +44,13 @@
 
 ### Успешный сценарий
 
-```mermaid
-sequenceDiagram
-    participant Client
-    participant OrderService
-    participant Pulsar
-    participant Orchestrator
-    participant PaymentService
-    participant InventoryService
-
-    Client->>OrderService: POST /api/orders
-    OrderService->>OrderService: Create order in DB
-    OrderService->>Pulsar: Publish OrderCreated
-    OrderService-->>Client: 200 OK {orderId, sagaId}
-
-    Pulsar->>Orchestrator: OrderCreated event
-    Orchestrator->>Orchestrator: Create saga state
-    Orchestrator->>Pulsar: ProcessPayment command
-
-    Pulsar->>PaymentService: ProcessPayment
-    PaymentService->>PaymentService: Charge customer
-    PaymentService->>Pulsar: PaymentProcessed event
-
-    Pulsar->>Orchestrator: PaymentProcessed
-    Orchestrator->>Orchestrator: Update saga (PAYMENT_COMPLETED)
-    Orchestrator->>Pulsar: ReserveInventory command
-
-    Pulsar->>InventoryService: ReserveInventory
-    InventoryService->>InventoryService: Reserve stock
-    InventoryService->>Pulsar: InventoryReserved event
-
-    Pulsar->>Orchestrator: InventoryReserved
-    Orchestrator->>Orchestrator: Saga COMPLETED ✅
-```
+[Mermaid](успешный%20сценарий.mermaid)
 
 ### Сценарий с компенсацией
 
-```mermaid
-sequenceDiagram
-    participant Client
-    participant OrderService
-    participant Pulsar
-    participant Orchestrator
-    participant PaymentService
-    participant InventoryService
+[Mermaid](Сценарий%20с%20компенсацией.mermaid)
 
-    Client->>OrderService: POST /api/orders
-    OrderService->>Pulsar: OrderCreated
-
-    Pulsar->>Orchestrator: OrderCreated
-    Orchestrator->>Pulsar: ProcessPayment command
-
-    Pulsar->>PaymentService: ProcessPayment
-    PaymentService->>PaymentService: ✅ Payment successful
-    PaymentService->>Pulsar: PaymentProcessed
-
-    Pulsar->>Orchestrator: PaymentProcessed
-    Orchestrator->>Pulsar: ReserveInventory command
-
-    Pulsar->>InventoryService: ReserveInventory
-    InventoryService->>InventoryService: ❌ Insufficient stock
-    InventoryService->>Pulsar: InventoryReservationFailed
-
-    Pulsar->>Orchestrator: InventoryReservationFailed
-    Orchestrator->>Orchestrator: Saga COMPENSATING 🔄
-    Orchestrator->>Pulsar: RefundPayment command
-
-    Pulsar->>PaymentService: RefundPayment
-    PaymentService->>PaymentService: Refund customer
-
-    Orchestrator->>Orchestrator: Saga COMPENSATED ✅
-```
+1. [ ] **TODO** разобраться в том, как изменится состояние Заказ при компенсации. У заказа должно быть поле состояния какое-то
 
 ## 🔐 Гарантии доставки
 
@@ -136,27 +72,44 @@ consumer.negativeAcknowledge(message); // При ошибке → retry
 **Проблема:** At-least-once может привести к дублям (сетевая ошибка после обработки, но до ack).
 
 **Решение - Idempotency:**
+Каждое событие/команда содержит `idempotencyKey`. 
 
+* Ключ идемпотентности генерируется в начале процесса, а именно в `OrderService`:  
 ```java
-// 1. Каждое событие/команда содержит idempotencyKey
 OrderCreatedEvent event = OrderCreatedEvent.builder()
     .orderId(orderId)
     .idempotencyKey(orderId)  // ← Ключ для дедупликации
     .build();
+```
+* В `PulsarCommandPublisher` копируется ключ идемпотентности в каждую из команд:
 
-// 2. Consumer проверяет перед обработкой
+```java
+command.setIdempotencyKey(event.getIdempotencyKey());
+```
+
+* Каждый Consumer проверяет перед обработкой -- `PaysService`, `InventoryService`:
+```java
 if (processedPayments.containsKey(command.getIdempotencyKey())) {
     log.warn("Already processed, skipping");
     consumer.acknowledge(message);
     return;
 }
-
+```
+```java
 // 3. Обрабатываем
 processPayment(command);
+```
+* Сохраняем факт обработки. Успех:
+```java
+ processedPayments.put(command.getIdempotencyKey(), paymentId);
+```
+* Сохраняем факт обработки. Возврат:
+```java
 
-// 4. Сохраняем факт обработки
-processedPayments.put(command.getIdempotencyKey(), result);
-
+String refundKey = command.getIdempotencyKey() + "-refund";
+processedPayments.put(refundKey, "REFUNDED");
+```
+```java
 // 5. Acknowledge
 consumer.acknowledge(message);
 ```
@@ -167,11 +120,12 @@ consumer.acknowledge(message);
 - **Message key**: партиционирование и дедупликация по ключу
 
 ### 3. **Producer Reliability**
+Reliability -- надёжность
 
 ```java
 Producer<byte[]> producer = pulsarClient.newProducer()
     .topic(topic)
-    .enableBatching(false)        // Низкая latency
+    .enableBatching(false)        // Низкая latency!!! На практике лучше включить!!!!
     .sendTimeout(10, TimeUnit.SECONDS)  // Retry при ошибках
     .compressionType(CompressionType.LZ4)
     .create();
@@ -246,10 +200,34 @@ public class SagaState {
     }
 }
 ```
+* Создание `SagaState`:
+```java
+        sagaState.status(SagaStatus.STARTED)
+        sagaState.addEvent("OrderCreated: " + orderCreatedEvent.getOrderId());
+        sagaStateRepository.save(sagaState);
+        
+        commandPublisher.publishProcessPayment(command);
+
+        sagaState.setStatus(SagaStatus.PAYMENT_PROCESSING);
+        sagaState.addEvent("ProcessPaymentCommand sent");
+        sagaStateRepository.save(sagaState);
+```
+* Компенсация. Резервирование провалилось → возвращаем деньги:
+```java
+
+        state.setStatus(SagaStatus.COMPENSATING);
+        state.addEvent("InventoryReservationFailed: " + inventoryReservationFailedEvent.getReason());
+        stateRepository.save(state);
+
+        commandPublisher.publishRefundPayment(publishRefundPayment);
+        state.setStatus(SagaStatus.COMPENSATED);
+        stateRepository.save(state);
+```
 
 **Преимущества:**
 - Можно восстановить состояние саги после сбоя
-- Audit trail: видим всю историю транзакции
+- Audit trail (аудиторский след): видим всю историю транзакции. Audit trail — это хронологическая (по времени)   
+и неизменяемая запись всех значимых действий, событий, изменений или транзакций в системе.
 - Отладка: понятно, на каком этапе провал
 
 ## 🚀 Запуск проекта
@@ -454,8 +432,9 @@ class SagaIntegrationTest {
 - Compensating commands для отката
 - Event sourcing для отслеживания состояния
 
-✅ **Pulsar features:**
-- Persistent topics для durability
+✅ **Pulsar features (возможности):**
+- Persistent topics для durability  
+        Постоянные топики (persistent topics) — для durability (гарантированного сохранения сообщений на диске, даже после перезапуска брокера или сбоя)
 - Shared subscriptions для масштабирования
 - Deduplication для exactly-once
 

@@ -1,0 +1,31 @@
+sequenceDiagram
+    participant Client
+    participant OrderService
+    participant Pulsar
+    participant Orchestrator
+    participant PaymentService
+    participant InventoryService
+
+    Client->>OrderService: POST /api/orders
+    OrderService->>OrderService: Create order in DB
+    OrderService->>Pulsar: Publish OrderCreated
+    OrderService-->>Client: 200 OK {orderId, sagaId}
+
+    Pulsar->>Orchestrator: OrderCreated event
+    Orchestrator->>Orchestrator: Create saga state
+    Orchestrator->>Pulsar: ProcessPayment command
+
+    Pulsar->>PaymentService: ProcessPayment
+    PaymentService->>PaymentService: Charge customer
+    PaymentService->>Pulsar: PaymentProcessed event
+
+    Pulsar->>Orchestrator: PaymentProcessed
+    Orchestrator->>Orchestrator: Update saga (PAYMENT_COMPLETED)
+    Orchestrator->>Pulsar: ReserveInventory command
+
+    Pulsar->>InventoryService: ReserveInventory
+    InventoryService->>InventoryService: Reserve stock
+    InventoryService->>Pulsar: InventoryReserved event
+
+    Pulsar->>Orchestrator: InventoryReserved
+    Orchestrator->>Orchestrator: Saga COMPLETED ✅

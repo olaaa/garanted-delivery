@@ -78,49 +78,50 @@ public class SagaOrchestrator {
                 .timestamp(Instant.now())
                 .build();
 
+        commandPublisher.publishProcessPayment(command);
+
         state.setStatus(SagaStatus.PAYMENT_PROCESSING);
         state.addEvent("ProcessPaymentCommand sent");
         stateRepository.save(state);
 
-        commandPublisher.publishProcessPayment(command);
     }
 
     /**
      * Шаг 2: Платеж обработан успешно → резервируем товар.
      */
-    public void handlePaymentProcessed(PaymentProcessedEvent event) {
-        log.info("Payment processed for order: {}", event.getOrderId());
+    public void handlePaymentProcessed(PaymentProcessedEvent paymentProcessedEvent) {
+        log.info("Payment processed for order: {}", paymentProcessedEvent.getOrderId());
 
-        SagaState state = stateRepository.findBySagaId(event.getSagaId())
-                .orElseThrow(() -> new IllegalStateException("Saga not found: " + event.getSagaId()));
+        SagaState sagaState = stateRepository.findBySagaId(paymentProcessedEvent.getSagaId())
+                .orElseThrow(() -> new IllegalStateException("Saga not found: " + paymentProcessedEvent.getSagaId()));
 
         // Идемпотентность: уже обработали?
-        if (stateRepository.isEventProcessed(event.getSagaId(), "PaymentProcessed")) {
-            log.warn("PaymentProcessed already handled for saga {}", event.getSagaId());
+        if (stateRepository.isEventProcessed(paymentProcessedEvent.getSagaId(), "PaymentProcessed")) {
+            log.warn("PaymentProcessed already handled for saga {}", paymentProcessedEvent.getSagaId());
             return;
         }
 
-        state.setStatus(SagaStatus.PAYMENT_COMPLETED);
-        state.addCompletedStep("Payment: " + event.getPaymentId());
-        state.addEvent("PaymentProcessed: " + event.getPaymentId());
-        stateRepository.save(state);
+        sagaState.setStatus(SagaStatus.PAYMENT_COMPLETED);
+        sagaState.addCompletedStep("Payment: " + paymentProcessedEvent.getPaymentId());
+        sagaState.addEvent("PaymentProcessed: " + paymentProcessedEvent.getPaymentId());
+        stateRepository.save(sagaState);
 
         // Отправляем команду на резервирование товара
         // Примечание: в реальном проекте данные о товаре нужно получить из заказа
         ReserveInventoryCommand command = ReserveInventoryCommand.builder()
-                .orderId(event.getOrderId())
-                .sagaId(event.getSagaId())
+                .orderId(paymentProcessedEvent.getOrderId())
+                .sagaId(paymentProcessedEvent.getSagaId())
                 .productCode("PRODUCT-001") // В production - из заказа
                 .quantity(1)
-                .idempotencyKey(event.getOrderId() + "-inventory")
+                .idempotencyKey(paymentProcessedEvent.getOrderId() + "-inventory")
                 .timestamp(Instant.now())
                 .build();
 
-        state.setStatus(SagaStatus.INVENTORY_RESERVING);
-        state.addEvent("ReserveInventoryCommand sent");
-        stateRepository.save(state);
-
         commandPublisher.publishReserveInventory(command);
+
+        sagaState.setStatus(SagaStatus.INVENTORY_RESERVING);
+        sagaState.addEvent("ReserveInventoryCommand sent");
+        stateRepository.save(sagaState);
     }
 
     /**
@@ -168,41 +169,41 @@ public class SagaOrchestrator {
     /**
      * КОМПЕНСАЦИЯ: Резервирование провалилось → возвращаем деньги.
      */
-    public void handleInventoryReservationFailed(InventoryReservationFailedEvent event) {
+    public void handleInventoryReservationFailed(InventoryReservationFailedEvent inventoryReservationFailedEvent) {
         log.error("Inventory reservation failed for order {}: {}",
-                  event.getOrderId(), event.getReason());
+                  inventoryReservationFailedEvent.getOrderId(), inventoryReservationFailedEvent.getReason());
 
-        SagaState state = stateRepository.findBySagaId(event.getSagaId())
-                .orElseThrow(() -> new IllegalStateException("Saga not found: " + event.getSagaId()));
+        SagaState state = stateRepository.findBySagaId(inventoryReservationFailedEvent.getSagaId())
+                .orElseThrow(() -> new IllegalStateException("Saga not found: " + inventoryReservationFailedEvent.getSagaId()));
 
         state.setStatus(SagaStatus.COMPENSATING);
-        state.addEvent("InventoryReservationFailed: " + event.getReason());
+        state.addEvent("InventoryReservationFailed: " + inventoryReservationFailedEvent.getReason());
         stateRepository.save(state);
 
         // Откатываем успешные шаги в обратном порядке
         if (state.getCompletedSteps().stream().anyMatch(s -> s.startsWith("Payment"))) {
-            log.info("🔄 Compensating payment for saga: {}", event.getSagaId());
+            log.info("🔄 Compensating payment for saga: {}", inventoryReservationFailedEvent.getSagaId());
 
             // Извлекаем paymentId из completedSteps
             String paymentId = extractPaymentId(state);
 
-            RefundPaymentCommand command = RefundPaymentCommand.builder()
-                    .orderId(event.getOrderId())
-                    .sagaId(event.getSagaId())
+            RefundPaymentCommand publishRefundPayment = RefundPaymentCommand.builder()
+                    .orderId(inventoryReservationFailedEvent.getOrderId())
+                    .sagaId(inventoryReservationFailedEvent.getSagaId())
                     .paymentId(paymentId)
                     .amount(null) // В production - из заказа
                     .reason("Inventory not available")
-                    .idempotencyKey(event.getOrderId() + "-refund")
+                    .idempotencyKey(inventoryReservationFailedEvent.getOrderId() + "-refund")
                     .timestamp(Instant.now())
                     .build();
 
-            commandPublisher.publishRefundPayment(command);
+            commandPublisher.publishRefundPayment(publishRefundPayment);
         }
 
         state.setStatus(SagaStatus.COMPENSATED);
         stateRepository.save(state);
 
-        log.info("🔄 Saga compensated: {}", event.getSagaId());
+        log.info("🔄 Saga compensated: {}", inventoryReservationFailedEvent.getSagaId());
     }
 
     private String extractPaymentId(SagaState state) {

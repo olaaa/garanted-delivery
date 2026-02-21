@@ -1,0 +1,33 @@
+sequenceDiagram
+    participant Client
+    participant OrderService
+    participant Pulsar
+    participant Orchestrator
+    participant PaymentService
+    participant InventoryService
+
+    Client->>OrderService: POST /api/orders
+    OrderService->>Pulsar: OrderCreated
+
+    Pulsar->>Orchestrator: OrderCreated
+    Orchestrator->>Pulsar: ProcessPayment command
+
+    Pulsar->>PaymentService: ProcessPayment
+    PaymentService->>PaymentService: ✅ Payment successful
+    PaymentService->>Pulsar: PaymentProcessed
+
+    Pulsar->>Orchestrator: PaymentProcessed
+    Orchestrator->>Pulsar: ReserveInventory command
+
+    Pulsar->>InventoryService: ReserveInventory
+    InventoryService->>InventoryService: ❌ Insufficient stock
+    InventoryService->>Pulsar: InventoryReservationFailed
+
+    Pulsar->>Orchestrator: InventoryReservationFailed
+    Orchestrator->>Orchestrator: Saga COMPENSATING 🔄
+    Orchestrator->>Pulsar: RefundPayment command
+
+    Pulsar->>PaymentService: RefundPayment
+    PaymentService->>PaymentService: Refund customer
+
+    Orchestrator->>Orchestrator: Saga COMPENSATED ✅
