@@ -11,7 +11,7 @@ services:
       - "8085:8080"  # Pulsar HTTP/Admin API
     command: bin/pulsar standalone
 #    environment:
-      # Включаем дедупликацию для exactly-once semantics
+#       Включаем дедупликацию для exactly-once semantics
 #      - PULSAR_STANDALONE_USE_ZOOKEEPER=1
 #      - PULSAR_PREFIX_brokerDeduplicationEnabled=true
 #      - PULSAR_PREFIX_brokerDeduplicationMaxNumberOfProducers=10000
